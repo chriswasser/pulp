@@ -28,6 +28,7 @@ from .core import LpSolver_CMD, LpSolver, subprocess, PulpSolverError, clock, lo
 from .core import cbc_path, pulp_cbc_path, coinMP_path, devnull, operating_system
 import os
 from .. import constants
+from .. import pulp as pl
 from tempfile import mktemp
 import ctypes
 import warnings
@@ -86,13 +87,13 @@ class COIN_CMD(LpSolver_CMD):
         """
 
         if fracGap is not None:
-            warnings.warn("Parameter fracGap is being depreciated for gapRel")
+            warnings.warn("Parameter fracGap is being deprecated for gapRel")
             if gapRel is not None:
                 warnings.warn("Parameter gapRel and fracGap passed, using gapRel")
             else:
                 gapRel = fracGap
         if maxSeconds is not None:
-            warnings.warn("Parameter maxSeconds is being depreciated for timeLimit")
+            warnings.warn("Parameter maxSeconds is being deprecated for timeLimit")
             if timeLimit is not None:
                 warnings.warn(
                     "Parameter timeLimit and maxSeconds passed, using timeLimit"
@@ -100,7 +101,7 @@ class COIN_CMD(LpSolver_CMD):
             else:
                 timeLimit = maxSeconds
         if mip_start:
-            warnings.warn("Parameter mip_start is being depreciated for warmStart")
+            warnings.warn("Parameter mip_start is being deprecated for warmStart")
             if warmStart:
                 warnings.warn(
                     "Parameter mipStart and mip_start passed, using warmStart"
@@ -140,15 +141,18 @@ class COIN_CMD(LpSolver_CMD):
         """True if the solver is available"""
         return self.executable(self.path)
 
-    def solve_CBC(self, lp, use_mps=True):
+    def solve_CBC(self, lp: pl.LpProblem, use_mps=True):
         """Solve a MIP problem using CBC"""
         if not self.executable(self.path):
             raise PulpSolverError(
                 "Pulp: cannot execute %s cwd: %s" % (self.path, os.getcwd())
             )
+        lp.checkDuplicateVars()
+
         tmpLp, tmpMps, tmpSol, tmpMst = self.create_tmp_files(
             lp.name, "lp", "mps", "sol", "mst"
         )
+
         if use_mps:
             vs, variablesNames, constraintsNames, objectiveName = lp.writeMPS(
                 tmpMps, rename=1
@@ -157,6 +161,10 @@ class COIN_CMD(LpSolver_CMD):
             if lp.sense == constants.LpMaximize:
                 cmds += "max "
         else:
+            # CBC imposes some restrictions on the variable names (see: https://github.com/coin-or/Cbc/issues/534)
+            # --> we only do a basic check here to validate the variable length
+            lp.checkLengthVars(100)
+
             vs = lp.writeLP(tmpLp)
             # In the Lp we do not create new variable or constraint names:
             variablesNames = dict((v.name, v.name) for v in vs)

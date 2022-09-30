@@ -28,16 +28,20 @@
 # Users would need to install HiGHS on their machine and provide the path to the executable. Please look at this thread: https://github.com/ERGO-Code/HiGHS/issues/527#issuecomment-894852288
 # More instructions on: https://www.highs.dev
 
+from typing import List
+
 from .core import LpSolver_CMD, subprocess, PulpSolverError
 import os, sys
 from .. import constants
-import warnings
+from .. import pulp as pl
 
 
 class HiGHS_CMD(LpSolver_CMD):
     """The HiGHS_CMD solver"""
 
-    name = "HiGHS_CMD"
+    name: str = "HiGHS_CMD"
+
+    SOLUTION_STYLE: int = 2
 
     def __init__(
         self,
@@ -47,14 +51,16 @@ class HiGHS_CMD(LpSolver_CMD):
         msg=True,
         options=None,
         timeLimit=None,
+        threads=None,
     ):
         """
         :param bool mip: if False, assume LP even if integer variables
         :param bool msg: if False, no log is shown
         :param float timeLimit: maximum time for solver (in seconds)
-        :param list options: list of additional options to pass to solver
+        :param list[str] options: list of additional options to pass to solver
         :param bool keepFiles: if True, files are saved in the current directory and not deleted after solving
         :param str path: path to the solver binary (you can get binaries for your platform from https://github.com/JuliaBinaryWrappers/HiGHS_jll.jl/releases, or else compile from source - https://highs.dev)
+        :param int threads: sets the maximum number of threads
         """
         LpSolver_CMD.__init__(
             self,
@@ -64,6 +70,7 @@ class HiGHS_CMD(LpSolver_CMD):
             options=options,
             path=path,
             keepFiles=keepFiles,
+            threads=threads,
         )
 
     def defaultPath(self):
@@ -73,54 +80,40 @@ class HiGHS_CMD(LpSolver_CMD):
         """True if the solver is available"""
         return self.executable(self.path)
 
-    def actualSolve(self, lp):
+    def actualSolve(self, lp: pl.LpProblem):
         """Solve a well formulated lp problem"""
         if not self.executable(self.path):
             raise PulpSolverError("PuLP: cannot execute " + self.path)
+        lp.checkDuplicateVars()
+
         tmpMps, tmpSol, tmpOptions, tmpLog = self.create_tmp_files(
             lp.name, "mps", "sol", "HiGHS", "HiGHS_log"
         )
-        write_lines = [
-            "solution_file = %s\n" % tmpSol,
-            "write_solution_to_file = true\n",
-            "write_solution_style = 2\n",
-        ]
-        with open(tmpOptions, "w") as fp:
-            fp.writelines(write_lines)
+        lp.writeMPS(tmpMps)
 
-        if lp.sense == constants.LpMaximize:
-            # we swap the objectives
-            # because it does not handle maximization.
-            warnings.warn(
-                "HiGHS_CMD does not currently allow maximization, "
-                "we will minimize the inverse of the objective function."
-            )
-            lp += -lp.objective
-        lp.checkDuplicateVars()
-        lp.writeMPS(tmpMps)  # , mpsSense=constants.LpMinimize)
+        file_options: List[str] = []
+        file_options.append(f"solution_file = {tmpSol}")
+        file_options.append("write_solution_to_file = true")
+        file_options.append(f"write_solution_style = {HiGHS_CMD.SOLUTION_STYLE}")
+        if "threads" in self.optionsDict:
+            file_options.append(f"threads = {self.optionsDict['threads']}")
+        with open(tmpOptions, "w") as options_file:
+            options_file.write("\n".join(file_options))
 
-        # just to report duplicated variables:
-        try:
-            os.remove(tmpSol)
-        except:
-            pass
-        cmd = self.path
-        cmd += " %s" % tmpMps
-        cmd += " --options_file %s" % tmpOptions
+        command: List[str] = []
+        command.append(self.path)
+        command.append(tmpMps)
+        command.append(f"--options_file={tmpOptions}")
         if self.timeLimit is not None:
-            cmd += " --time_limit %s" % self.timeLimit
-        for option in self.options:
-            cmd += " " + option
-        if lp.isMIP():
-            if not self.mip:
-                warnings.warn("HiGHS_CMD cannot solve the relaxation of a problem")
-        if self.msg:
-            pipe = None
-        else:
-            pipe = open(os.devnull, "w")
-        lp_status = None
+            command.append(f"--time_limit={self.timeLimit}")
+        if not self.mip:
+            command.append("--solver=simplex")
+        if "threads" in self.optionsDict:
+            command.append("--parallel=on")
+        command.extend(self.options)
+
         with subprocess.Popen(
-            cmd.split(),
+            command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True,
@@ -129,10 +122,6 @@ class HiGHS_CMD(LpSolver_CMD):
                 if self.msg:
                     sys.__stdout__.write(line)
                 log_file.write(line)
-
-        # We need to undo the objective swap before finishing
-        if lp.sense == constants.LpMaximize:
-            lp += -lp.objective
 
         # The return code for HiGHS on command line follows: 0:program ran successfully, 1: warning, -1: error - https://github.com/ERGO-Code/HiGHS/issues/527#issuecomment-946575028
         return_code = proc.wait()
