@@ -96,7 +96,7 @@ def readMPS(path, sense, dropConsNames=False):
                         sense=ROW_EQUIV[row_type],
                         name=row_name,
                         coefficients=[],
-                        **ROW_DEFAULT
+                        **ROW_DEFAULT,
                     )
             elif mode == CORE_FILE_COL_MODE:
                 var_name = line[0]

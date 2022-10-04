@@ -51,26 +51,35 @@ class HiGHS_CMD(LpSolver_CMD):
         msg=True,
         options=None,
         timeLimit=None,
+        gapRel=None,
+        gapAbs=None,
         threads=None,
+        logPath=None,
     ):
         """
         :param bool mip: if False, assume LP even if integer variables
         :param bool msg: if False, no log is shown
         :param float timeLimit: maximum time for solver (in seconds)
+        :param float gapRel: relative gap tolerance for the solver to stop (in fraction)
+        :param float gapAbs: absolute gap tolerance for the solver to stop
         :param list[str] options: list of additional options to pass to solver
         :param bool keepFiles: if True, files are saved in the current directory and not deleted after solving
         :param str path: path to the solver binary (you can get binaries for your platform from https://github.com/JuliaBinaryWrappers/HiGHS_jll.jl/releases, or else compile from source - https://highs.dev)
         :param int threads: sets the maximum number of threads
+        :param str logPath: path to the log file
         """
         LpSolver_CMD.__init__(
             self,
             mip=mip,
             msg=msg,
             timeLimit=timeLimit,
+            gapRel=gapRel,
+            gapAbs=gapAbs,
             options=options,
             path=path,
             keepFiles=keepFiles,
             threads=threads,
+            logPath=logPath,
         )
 
     def defaultPath(self):
@@ -80,7 +89,7 @@ class HiGHS_CMD(LpSolver_CMD):
         """True if the solver is available"""
         return self.executable(self.path)
 
-    def actualSolve(self, lp: pl.LpProblem):
+    def actualSolve(self, lp):
         """Solve a well formulated lp problem"""
         if not self.executable(self.path):
             raise PulpSolverError("PuLP: cannot execute " + self.path)
@@ -92,13 +101,17 @@ class HiGHS_CMD(LpSolver_CMD):
         lp.writeMPS(tmpMps)
 
         file_options: List[str] = []
-        file_options.append(f"solution_file = {tmpSol}")
-        file_options.append("write_solution_to_file = true")
-        file_options.append(f"write_solution_style = {HiGHS_CMD.SOLUTION_STYLE}")
+        file_options.append(f"solution_file={tmpSol}")
+        file_options.append("write_solution_to_file=true")
+        file_options.append(f"write_solution_style={HiGHS_CMD.SOLUTION_STYLE}")
         if "threads" in self.optionsDict:
-            file_options.append(f"threads = {self.optionsDict['threads']}")
-        with open(tmpOptions, "w") as options_file:
-            options_file.write("\n".join(file_options))
+            file_options.append(f"threads={self.optionsDict['threads']}")
+        if "gapRel" in self.optionsDict:
+            file_options.append(f"mip_rel_gap={self.optionsDict['gapRel']}")
+        if "gapAbs" in self.optionsDict:
+            file_options.append(f"mip_abs_gap={self.optionsDict['gapAbs']}")
+        if "logPath" in self.optionsDict:
+            file_options.append(f"log_file={self.optionsDict['logPath']}")
 
         command: List[str] = []
         command.append(self.path)
@@ -110,8 +123,21 @@ class HiGHS_CMD(LpSolver_CMD):
             command.append("--solver=simplex")
         if "threads" in self.optionsDict:
             command.append("--parallel=on")
-        command.extend(self.options)
 
+        options = iter(self.options)
+        for option in options:
+            # assumption: all cli and file options require an argument which is provided after the equal sign (=)
+            if "=" not in option:
+                option += f"={next(options)}"
+
+            # identify cli options by a leading dash (-) and treat other options as file options
+            if option.starts_with("-"):
+                command.append(option)
+            else:
+                file_options.append(option)
+
+        with open(tmpOptions, "w") as options_file:
+            options_file.write("\n".join(file_options))
         with subprocess.Popen(
             command,
             stdout=subprocess.PIPE,

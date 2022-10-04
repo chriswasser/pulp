@@ -28,7 +28,6 @@ from .core import LpSolver_CMD, LpSolver, subprocess, PulpSolverError, clock, lo
 from .core import cbc_path, pulp_cbc_path, coinMP_path, devnull, operating_system
 import os
 from .. import constants
-from .. import pulp as pl
 from tempfile import mktemp
 import ctypes
 import warnings
@@ -141,7 +140,7 @@ class COIN_CMD(LpSolver_CMD):
         """True if the solver is available"""
         return self.executable(self.path)
 
-    def solve_CBC(self, lp: pl.LpProblem, use_mps=True):
+    def solve_CBC(self, lp, use_mps=True):
         """Solve a MIP problem using CBC"""
         if not self.executable(self.path):
             raise PulpSolverError(

@@ -82,7 +82,6 @@ class GLPK_CMD(LpSolver_CMD):
             proc.append("--nomip")
         proc.extend(self.options)
 
-        self.solution_time = clock()
         if not self.msg:
             proc[0] = self.path
             pipe = open(os.devnull, "w")
@@ -109,7 +108,6 @@ class GLPK_CMD(LpSolver_CMD):
                 raise PulpSolverError(
                     "PuLP: Error while trying to execute " + self.path
                 )
-        self.solution_time += clock()
 
         if not os.path.exists(tmpSol):
             raise PulpSolverError("PuLP: Error while executing " + self.path)
