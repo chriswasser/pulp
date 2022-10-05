@@ -33,7 +33,6 @@ from typing import List
 from .core import LpSolver_CMD, subprocess, PulpSolverError
 import os, sys
 from .. import constants
-from .. import pulp as pl
 
 
 class HiGHS_CMD(LpSolver_CMD):
@@ -41,7 +40,7 @@ class HiGHS_CMD(LpSolver_CMD):
 
     name: str = "HiGHS_CMD"
 
-    SOLUTION_STYLE: int = 2
+    SOLUTION_STYLE: int = 0
 
     def __init__(
         self,
@@ -111,7 +110,10 @@ class HiGHS_CMD(LpSolver_CMD):
         if "gapAbs" in self.optionsDict:
             file_options.append(f"mip_abs_gap={self.optionsDict['gapAbs']}")
         if "logPath" in self.optionsDict:
-            file_options.append(f"log_file={self.optionsDict['logPath']}")
+            highs_log_file = self.optionsDict["logPath"]
+        else:
+            highs_log_file = tmpLog
+        file_options.append(f"log_file={highs_log_file}")
 
         command: List[str] = []
         command.append(self.path)
@@ -138,61 +140,52 @@ class HiGHS_CMD(LpSolver_CMD):
 
         with open(tmpOptions, "w") as options_file:
             options_file.write("\n".join(file_options))
-        with subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=True,
-        ) as proc, open(tmpLog, "w") as log_file:
-            for line in proc.stdout:
-                if self.msg:
-                    sys.__stdout__.write(line)
-                log_file.write(line)
+        process = subprocess.run(command, stdout=sys.stdout, stderr=sys.stderr)
 
-        # The return code for HiGHS on command line follows: 0:program ran successfully, 1: warning, -1: error - https://github.com/ERGO-Code/HiGHS/issues/527#issuecomment-946575028
-        return_code = proc.wait()
-        if return_code in [0, 1]:
-            with open(tmpLog, "r") as log_file:
-                content = log_file.readlines()
-            content = [l.strip().split() for l in content]
-            # LP
-            model_line = [l for l in content if l[:2] == ["Model", "status"]]
-            if len(model_line) > 0:
-                model_status = " ".join(model_line[0][3:])  # Model status: ...
-            else:
-                # ILP
-                model_line = [l for l in content if "Status" in l][0]
-                model_status = " ".join(model_line[1:])
-            sol_line = [l for l in content if l[:2] == ["Solution", "status"]]
-            sol_line = sol_line[0] if len(sol_line) > 0 else ["Not solved"]
-            sol_status = sol_line[-1]
-            if model_status.lower() == "optimal":  # optimal
-                status, status_sol = (
-                    constants.LpStatusOptimal,
-                    constants.LpSolutionOptimal,
-                )
-            elif sol_status.lower() == "feasible":  # feasible
-                # Following the PuLP convention
-                status, status_sol = (
-                    constants.LpStatusOptimal,
-                    constants.LpSolutionIntegerFeasible,
-                )
-            elif model_status.lower() == "infeasible":  # infeasible
-                status, status_sol = (
-                    constants.LpStatusInfeasible,
-                    constants.LpSolutionNoSolutionFound,
-                )
-            elif model_status.lower() == "unbounded":  # unbounded
-                status, status_sol = (
-                    constants.LpStatusUnbounded,
-                    constants.LpSolutionNoSolutionFound,
-                )
+        # HiGHS return code semantics (see: https://github.com/ERGO-Code/HiGHS/issues/527#issuecomment-946575028)
+        # - -1: error
+        # -  0: success
+        # -  1: warning
+        if process.returncode == -1:
+            raise PulpSolverError("Error while executing HiGHS")
+
+        with open(highs_log_file, "r") as log_file:
+            lines = log_file.readlines()
+        lines = [line.strip().split() for line in lines]
+
+        # LP
+        model_line = [line for line in lines if line[:2] == ["Model", "status"]]
+        if len(model_line) > 0:
+            model_status = " ".join(model_line[0][3:])  # Model status: ...
         else:
-            status = constants.LpStatusUndefined
-            status_sol = constants.LpSolutionNoSolutionFound
-            raise PulpSolverError("Pulp: Error while executing", self.path)
-
-        if status == constants.LpStatusUndefined:
+            # ILP
+            model_line = [line for line in lines if "Status" in line][0]
+            model_status = " ".join(model_line[1:])
+        sol_line = [line for line in lines if line[:2] == ["Solution", "status"]]
+        sol_line = sol_line[0] if len(sol_line) > 0 else ["Not solved"]
+        sol_status = sol_line[-1]
+        if model_status.lower() == "optimal":  # optimal
+            status, status_sol = (
+                constants.LpStatusOptimal,
+                constants.LpSolutionOptimal,
+            )
+        elif sol_status.lower() == "feasible":  # feasible
+            # Following the PuLP convention
+            status, status_sol = (
+                constants.LpStatusOptimal,
+                constants.LpSolutionIntegerFeasible,
+            )
+        elif model_status.lower() == "infeasible":  # infeasible
+            status, status_sol = (
+                constants.LpStatusInfeasible,
+                constants.LpSolutionNoSolutionFound,
+            )
+        elif model_status.lower() == "unbounded":  # unbounded
+            status, status_sol = (
+                constants.LpStatusUnbounded,
+                constants.LpSolutionNoSolutionFound,
+            )
+        else:
             raise PulpSolverError("Pulp: Error while executing", self.path)
 
         if not os.path.exists(tmpSol) or os.stat(tmpSol).st_size == 0:
@@ -212,22 +205,20 @@ class HiGHS_CMD(LpSolver_CMD):
     @staticmethod
     def readsol(variables, filename):
         """Read a HiGHS solution file"""
-        with open(filename) as f:
-            content = f.readlines()
-        content = [l.strip() for l in content]
+        with open(filename) as file:
+            lines = file.readlines()
+
+        begin, end = None, None
+        for index, line in enumerate(lines):
+            if line.startswith("# Columns"):
+                begin = index + 1
+            if line.startswith("# Rows"):
+                end = index
+        if begin is None or end is None:
+            raise PulpSolverError("Cannot read HiGHS solver output")
+
         values = {}
-        if not len(content):  # if file is empty, update the status_sol
-            return None
-        # extract everything between the line Columns and Rows
-        col_id = content.index("Columns")
-        row_id = content.index("Rows")
-        solution = content[col_id + 1 : row_id]
-        # check whether it is an LP or an ILP
-        if "T Basis" in content:  # LP
-            for var, line in zip(variables, solution):
-                value = line.split()[0]
-                values[var.name] = float(value)
-        else:  # ILP
-            for var, value in zip(variables, solution):
-                values[var.name] = float(value)
+        for line in lines[begin:end]:
+            name, value = line.split()
+            values[name] = float(value)
         return values
