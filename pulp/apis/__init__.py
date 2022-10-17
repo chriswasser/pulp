@@ -28,6 +28,7 @@ _all_solvers = [
     MIPCL_CMD,
     SCIP_CMD,
     FSCIP_CMD,
+    SCIP_PY,
     HiGHS_CMD,
 ]
 

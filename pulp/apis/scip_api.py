@@ -24,12 +24,16 @@
 # TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."""
 
-from typing import Dict, List, Optional, Tuple, Union
-from .core import LpSolver_CMD, subprocess, PulpSolverError
-from .core import scip_path, fscip_path
+import operator
 import os
-from .. import constants
 import sys
+import warnings
+
+from .core import LpSolver_CMD, LpSolver, subprocess, PulpSolverError
+from .core import scip_path, fscip_path
+from .. import constants
+
+from typing import Dict, List, Optional, Tuple
 
 
 class SCIP_CMD(LpSolver_CMD):
@@ -48,6 +52,7 @@ class SCIP_CMD(LpSolver_CMD):
         gapAbs=None,
         maxNodes=None,
         logPath=None,
+        threads=None,
     ):
         """
         :param bool msg: if False, no log is shown
@@ -58,6 +63,7 @@ class SCIP_CMD(LpSolver_CMD):
         :param float gapRel: relative gap tolerance for the solver to stop (in fraction)
         :param float gapAbs: absolute gap tolerance for the solver to stop
         :param int maxNodes: max number of nodes during branching. Stops the solving when reached.
+        :param int threads: sets the maximum number of threads
         :param str logPath: path to the log file
         """
         LpSolver_CMD.__init__(
@@ -70,6 +76,7 @@ class SCIP_CMD(LpSolver_CMD):
             gapRel=gapRel,
             gapAbs=gapAbs,
             maxNodes=maxNodes,
+            threads=threads,
             logPath=logPath,
         )
 
@@ -120,6 +127,8 @@ class SCIP_CMD(LpSolver_CMD):
             file_options.append(f"limits/absgap={self.optionsDict['gapAbs']}")
         if "maxNodes" in self.optionsDict:
             file_options.append(f"limits/nodes={self.optionsDict['maxNodes']}")
+        if "threads" in self.optionsDict and int(self.optionsDict["threads"]) > 1:
+            warnings.warn("SCIP can only run with a single thread - use FSCIP_CMD for a parallel version of SCIP")
 
         command: List[str] = []
         command.append(self.path)
@@ -180,9 +189,7 @@ class SCIP_CMD(LpSolver_CMD):
             except Exception:
                 raise PulpSolverError("Can't get SCIP solver status: %r" % line)
 
-            status = SCIP_CMD.SCIP_STATUSES.get(
-                comps[1].strip(), constants.LpStatusUndefined
-            )
+            status = SCIP_CMD.SCIP_STATUSES.get(comps[1].strip(), constants.LpStatusUndefined)
             values = {}
 
             if status in SCIP_CMD.NO_SOLUTION_STATUSES:
@@ -278,9 +285,7 @@ class FSCIP_CMD(LpSolver_CMD):
         if not self.executable(self.path):
             raise PulpSolverError("PuLP: cannot execute " + self.path)
 
-        tmpLp, tmpSol, tmpOptions, tmpParams = self.create_tmp_files(
-            lp.name, "lp", "sol", "set", "prm"
-        )
+        tmpLp, tmpSol, tmpOptions, tmpParams = self.create_tmp_files(lp.name, "lp", "sol", "set", "prm")
         lp.writeLP(tmpLp)
 
         file_options: List[str] = []
@@ -329,7 +334,7 @@ class FSCIP_CMD(LpSolver_CMD):
                 else:
                     file_parameters.append(option)
 
-        print(' '.join(command))
+        print(" ".join(command))
         # wipe the solution file since FSCIP does not overwrite it if no solution was found which causes parsing errors
         self.silent_remove(tmpSol)
         with open(tmpOptions, "w") as options_file:
@@ -408,18 +413,14 @@ class FSCIP_CMD(LpSolver_CMD):
             objective_line = file.readline()
             objective = FSCIP_CMD.parse_objective(objective_line)
             if objective is None:
-                raise PulpSolverError(
-                    f"Can't get FSCIP solver objective: {objective_line!r}"
-                )
+                raise PulpSolverError(f"Can't get FSCIP solver objective: {objective_line!r}")
 
             # Parse the variable values.
             variables: Dict[str, float] = {}
             for variable_line in file:
                 variable = FSCIP_CMD.parse_variable(variable_line)
                 if variable is None:
-                    raise PulpSolverError(
-                        f"Can't read FSCIP solver output: {variable_line!r}"
-                    )
+                    raise PulpSolverError(f"Can't read FSCIP solver output: {variable_line!r}")
 
                 name, value = variable
                 variables[name] = value
@@ -428,3 +429,209 @@ class FSCIP_CMD(LpSolver_CMD):
 
 
 FSCIP = FSCIP_CMD
+
+
+class SCIP_PY(LpSolver):
+    """
+    The SCIP Optimization Suite (via its python interface)
+
+    The SCIP internals are available after calling solve as:
+    - each variable in variable.solverVar
+    - each constraint in constraint.solverConstraint
+    - the model in problem.solverModel
+    """
+
+    name = "SCIP_PY"
+
+    try:
+
+        global scip
+        import pyscipopt as scip
+
+    except ImportError:
+
+        def available(self):
+            """True if the solver is available"""
+            return False
+
+        def actualSolve(self, lp):
+            """Solve a well formulated lp problem"""
+            raise PulpSolverError(f"The {self.name} solver is not available")
+
+    else:
+
+        def __init__(
+            self,
+            msg=True,
+            options=None,
+            timeLimit=None,
+            gapRel=None,
+            gapAbs=None,
+            maxNodes=None,
+            logPath=None,
+            threads=None,
+        ):
+            """
+            :param bool msg: if False, no log is shown
+            :param list options: list of additional options to pass to solver
+            :param float timeLimit: maximum time for solver (in seconds)
+            :param float gapRel: relative gap tolerance for the solver to stop (in fraction)
+            :param float gapAbs: absolute gap tolerance for the solver to stop
+            :param int maxNodes: max number of nodes during branching. Stops the solving when reached.
+            :param str logPath: path to the log file
+            :param int threads: sets the maximum number of threads
+            """
+            super().__init__(
+                msg=msg,
+                options=options,
+                timeLimit=timeLimit,
+                gapRel=gapRel,
+                gapAbs=gapAbs,
+                maxNodes=maxNodes,
+                logPath=logPath,
+                threads=threads,
+            )
+
+        def findSolutionValues(self, lp):
+            lp.resolveOK = True
+
+            solutionStatus = lp.solverModel.getStatus()
+            scip_to_pulp_status = {
+                "optimal": constants.LpStatusOptimal,
+                "unbounded": constants.LpStatusUnbounded,
+                "infeasible": constants.LpStatusInfeasible,
+                "inforunbd": constants.LpStatusInfeasible,
+                "timelimit": constants.LpStatusNotSolved,
+                "userinterrupt": constants.LpStatusNotSolved,
+                "nodelimit": constants.LpStatusNotSolved,
+                "totalnodelimit": constants.LpStatusNotSolved,
+                "stallnodelimit": constants.LpStatusNotSolved,
+                "gaplimit": constants.LpStatusNotSolved,
+                "memlimit": constants.LpStatusNotSolved,
+                "sollimit": constants.LpStatusNotSolved,
+                "bestsollimit": constants.LpStatusNotSolved,
+                "restartlimit": constants.LpStatusNotSolved,
+                "unknown": constants.LpStatusUndefined,
+            }
+            status = scip_to_pulp_status[solutionStatus]
+            lp.assignStatus(status)
+
+            if status == constants.LpStatusOptimal:
+                solution = lp.solverModel.getBestSol()
+                for variable in lp._variables:
+                    variable.varValue = solution[variable.solverVar]
+                    variable.dj = lp.solverModel.getVarRedcost(variable.solverVar)
+                for constraint in lp.constraints.values():
+                    constraint.slack = lp.solverModel.getSlack(constraint.solverConstraint, solution)
+                    constraint.pi = lp.solverModel.getDualSolVal(constraint.solverConstraint)
+
+            return status
+
+        def available(self):
+            """True if the solver is available"""
+            # if pyscipopt can be installed (and therefore imported) it has access to scip
+            return True
+
+        def callSolver(self, lp):
+            """Solves the problem with scip"""
+            lp.solverModel.optimize()
+
+        def buildSolverModel(self, lp):
+            """
+            Takes the pulp lp model and translates it into a scip model
+            """
+            ##################################################
+            # create model
+            ##################################################
+            lp.solverModel = scip.Model(lp.name)
+            if lp.sense == constants.LpMaximize:
+                lp.solverModel.setMaximize()
+            else:
+                lp.solverModel.setMinimize()
+
+            ##################################################
+            # add options
+            ##################################################
+            if not self.msg:
+                lp.solverModel.hideOutput()
+            if self.timeLimit is not None:
+                lp.solverModel.setParam("limits/time", self.timeLimit)
+            if "gapRel" in self.optionsDict:
+                lp.solverModel.setParam("limits/gap", self.optionsDict["gapRel"])
+            if "gapAbs" in self.optionsDict:
+                lp.solverModel.setParam("limits/absgap", self.optionsDict["gapAbs"])
+            if "maxNodes" in self.optionsDict:
+                lp.solverModel.setParam("limits/nodes", self.optionsDict["maxNodes"])
+            if "logPath" in self.optionsDict:
+                lp.solverModel.setLogfile(self.optionsDict["logPath"])
+            if "threads" in self.optionsDict and int(self.optionsDict["threads"]) > 1:
+                warnings.warn(f"The solver {self.name} can only run with a single thread")
+
+            options = iter(self.options)
+            for option in options:
+                # assumption: all file options require an argument which is provided after the equal sign (=)
+                if "=" in option:
+                    name, value = option.split("=", maxsplit=2)
+                else:
+                    name, value = option, next(options)
+                lp.solverModel.setParam(name, value)
+
+            ##################################################
+            # add variables
+            ##################################################
+            category_to_vtype = {
+                constants.LpBinary: "B",
+                constants.LpContinuous: "C",
+                constants.LpInteger: "I",
+            }
+            for var in lp.variables():
+                var.solverVar = lp.solverModel.addVar(
+                    name=var.name,
+                    vtype=category_to_vtype[var.cat],
+                    lb=var.lowBound,  # a lower bound of None represents -infinity
+                    ub=var.upBound,  # an upper bound of None represents +infinity
+                    obj=lp.objective.get(var, 0.0),
+                )
+
+            ##################################################
+            # add constraints
+            ##################################################
+            sense_to_operator = {
+                constants.LpConstraintLE: operator.le,
+                constants.LpConstraintGE: operator.ge,
+                constants.LpConstraintEQ: operator.eq,
+            }
+            for name, constraint in lp.constraints.items():
+                constraint.solverConstraint = lp.solverModel.addCons(
+                    cons=sense_to_operator[constraint.sense](
+                        scip.quicksum(coefficient * variable.solverVar for variable, coefficient in constraint.items()),
+                        -constraint.constant,
+                    ),
+                    name=name,
+                )
+
+        def actualSolve(self, lp):
+            """
+            Solve a well formulated lp problem
+
+            creates a scip model, variables and constraints and attaches
+            them to the lp model which it then solves
+            """
+            self.buildSolverModel(lp)
+            self.callSolver(lp)
+            solutionStatus = self.findSolutionValues(lp)
+            for variable in lp._variables:
+                variable.modified = False
+            for constraint in lp.constraints.values():
+                constraint.modified = False
+            return solutionStatus
+
+        def actualResolve(self, lp):
+            """
+            Solve a well formulated lp problem
+
+            uses the old solver and modifies the rhs of the modified constraints
+            """
+            # TODO: http://listserv.zib.de/pipermail/scip/2020-May/003977.html
+            # TODO: https://scipopt.org/doc-8.0.0/html/REOPT.php
+            raise PulpSolverError(f"The {self.name} solver does not implement resolving")
