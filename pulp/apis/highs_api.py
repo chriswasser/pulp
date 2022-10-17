@@ -97,7 +97,7 @@ class HiGHS_CMD(LpSolver_CMD):
         tmpMps, tmpSol, tmpOptions, tmpLog = self.create_tmp_files(
             lp.name, "mps", "sol", "HiGHS", "HiGHS_log"
         )
-        lp.writeMPS(tmpMps)
+        lp.writeMPS(tmpMps, with_objsense=True)
 
         file_options: List[str] = []
         file_options.append(f"solution_file={tmpSol}")
