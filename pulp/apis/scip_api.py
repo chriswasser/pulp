@@ -520,10 +520,15 @@ class SCIP_PY(LpSolver):
                 solution = lp.solverModel.getBestSol()
                 for variable in lp._variables:
                     variable.varValue = solution[variable.solverVar]
-                    variable.dj = lp.solverModel.getVarRedcost(variable.solverVar)
                 for constraint in lp.constraints.values():
                     constraint.slack = lp.solverModel.getSlack(constraint.solverConstraint, solution)
-                    constraint.pi = lp.solverModel.getDualSolVal(constraint.solverConstraint)
+
+                # TODO: check if problem is an LP i.e. does not have integer variables
+                # if :
+                #     for variable in lp._variables:
+                #         variable.dj = lp.solverModel.getVarRedcost(variable.solverVar)
+                #     for constraint in lp.constraints.values():
+                #         constraint.pi = lp.solverModel.getDualSolVal(constraint.solverConstraint)
 
             return status
 
@@ -632,6 +637,7 @@ class SCIP_PY(LpSolver):
 
             uses the old solver and modifies the rhs of the modified constraints
             """
-            # TODO: http://listserv.zib.de/pipermail/scip/2020-May/003977.html
-            # TODO: https://scipopt.org/doc-8.0.0/html/REOPT.php
+            # TODO: add ability to resolve pysciptopt models
+            # - http://listserv.zib.de/pipermail/scip/2020-May/003977.html
+            # - https://scipopt.org/doc-8.0.0/html/REOPT.php
             raise PulpSolverError(f"The {self.name} solver does not implement resolving")
